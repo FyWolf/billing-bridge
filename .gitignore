@@ -1,0 +1,7 @@
+/.idea
+/.vscode
+.DS_Store
+
+# The panel writes plugin status back into plugin.json at install/enable time.
+# Those local edits should not travel with the repo.
+plugin.json.bak

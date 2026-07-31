@@ -1,0 +1,7 @@
+# This plugin is checked out on a Linux panel host. Normalise to LF in the
+# repository so a Windows working copy cannot leak CRLF into it.
+* text=auto eol=lf
+
+*.php  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
