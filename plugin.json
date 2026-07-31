@@ -6,6 +6,7 @@
     "description": "Provisioning endpoints for the external HexaLabs billing service. No UI, no dependencies.",
     "category": "plugin",
     "url": "https://github.com/FyWolf/billing-bridge",
+    "update_url": "https://raw.githubusercontent.com/FyWolf/billing-bridge/main/updater.json",
     "namespace": "Hexalabs\\BillingBridge",
     "class": "BillingBridgePlugin",
     "panels": [],

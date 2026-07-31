@@ -79,6 +79,45 @@ without linking a customer's first login would create a second account.
 
 Callback URI is `https://<panel>/auth/oauth/callback/hexalabs`.
 
+## Releases
+
+Every push to `main` cuts a release automatically. The workflow reads the current version from
+`plugin.json`, derives the bump from the commit messages since the last tag, writes it back to
+`plugin.json` and `updater.json`, tags, and publishes a zip.
+
+| Commit since last tag | Bump |
+|---|---|
+| `feat!:` … or `BREAKING CHANGE` in the body | major |
+| `feat:` / `feat(scope):` | minor |
+| anything else — `fix:`, `chore:`, `docs:` … | patch |
+
+The highest bump found wins. To set a version by hand, run the workflow from the Actions tab and
+fill in the **version** input.
+
+The bump commit carries `[skip ci]`, and pushes made with `GITHUB_TOKEN` do not trigger workflows
+anyway, so the release cannot loop.
+
+### Panel auto-update
+
+`plugin.json` points `update_url` at `updater.json` on `main`, which the panel polls:
+
+```json
+{
+  "*": {
+    "version": "1.0.0",
+    "download_url": "https://github.com/FyWolf/billing-bridge/releases/latest/download/billing-bridge.zip"
+  }
+}
+```
+
+`"*"` means "any panel version". The workflow rewrites `download_url` from the repository context on
+each release, so renaming or forking the repo self-corrects — but if you rename it, update
+`update_url` in `plugin.json` by hand once, since the panel reads that before it ever sees
+`updater.json`.
+
+The zip contains a `billing-bridge/` root directory because the panel requires the extracted
+directory to match `id`.
+
 ## Compatibility
 
 `plugin.json` pins `"panel_version": "^2.0"`, so the panel disables it rather than letting it break
