@@ -7,8 +7,10 @@ use App\Models\User;
 use App\Services\Users\UserCreationService;
 use Hexalabs\BillingBridge\Http\Requests\ServerLifecycleRequest;
 use Hexalabs\BillingBridge\Http\Requests\StoreUserRequest;
+use Hexalabs\BillingBridge\Http\Requests\UpdateUserRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
 class UserController extends Controller
 {
@@ -62,6 +64,55 @@ class UserController extends Controller
         }
 
         return response()->json($this->format($user));
+    }
+
+    /**
+     * Push a profile change from the billing app.
+     *
+     * Panel users created here carry `is_managed_externally`, which locks
+     * panel-side self-service — so the billing app is the source of truth and
+     * has to be able to write changes through.
+     */
+    public function update(UpdateUserRequest $request, User $user): JsonResponse
+    {
+        $this->assertBillingManaged($user);
+
+        $data = array_filter([
+            'email'    => $request->validated('email'),
+            'username' => $request->validated('username'),
+        ], fn ($value) => $value !== null);
+
+        if ($data !== []) {
+            if (isset($data['username']) && $data['username'] !== $user->username) {
+                $data['username'] = $this->uniqueUsername($data['username']);
+            }
+
+            $user->update($data);
+        }
+
+        return response()->json($this->format($user->fresh()));
+    }
+
+    public function destroy(ServerLifecycleRequest $request, User $user): JsonResponse
+    {
+        $this->assertBillingManaged($user);
+
+        $user->delete();
+
+        return response()->json([], 204);
+    }
+
+    /**
+     * Refuse anything the billing service did not create. Without this a
+     * leaked billing key could rewrite or delete a hand-made panel admin.
+     */
+    private function assertBillingManaged(User $user): void
+    {
+        if (blank($user->external_id) || !$user->is_managed_externally) {
+            throw new AccessDeniedHttpException(
+                "User #{$user->id} is not managed by billing and cannot be modified through this endpoint."
+            );
+        }
     }
 
     private function uniqueUsername(string $username): string

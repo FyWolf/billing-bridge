@@ -22,6 +22,10 @@ class BridgeRoutesProvider extends RouteServiceProvider
                         ->name('billing-bridge.users.store');
                     Route::get('/users/external/{externalId}', [UserController::class, 'showByExternalId'])
                         ->name('billing-bridge.users.external');
+                    Route::patch('/users/{user}', [UserController::class, 'update'])
+                        ->name('billing-bridge.users.update');
+                    Route::delete('/users/{user}', [UserController::class, 'destroy'])
+                        ->name('billing-bridge.users.destroy');
 
                     Route::post('/servers', ProvisionController::class)
                         ->name('billing-bridge.servers.store');
