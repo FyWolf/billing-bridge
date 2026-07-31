@@ -10,7 +10,6 @@
   "namespace": "Hexalabs\\BillingBridge",
   "class": "BillingBridgePlugin",
   "panels": [],
-  "panel_version": "^2.0",
   "composer_packages": {},
   "meta": {
     "status": "enabled",
