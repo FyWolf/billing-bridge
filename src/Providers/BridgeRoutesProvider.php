@@ -4,6 +4,7 @@ namespace Hexalabs\BillingBridge\Providers;
 
 use Hexalabs\BillingBridge\Http\Controllers\EggController;
 use Hexalabs\BillingBridge\Http\Controllers\LifecycleController;
+use Hexalabs\BillingBridge\Http\Controllers\NodeController;
 use Hexalabs\BillingBridge\Http\Controllers\ProvisionController;
 use Hexalabs\BillingBridge\Http\Controllers\UserController;
 use Illuminate\Foundation\Support\Providers\RouteServiceProvider;
@@ -42,6 +43,9 @@ class BridgeRoutesProvider extends RouteServiceProvider
 
                     Route::get('/eggs', EggController::class)
                         ->name('billing-bridge.eggs.index');
+
+                    Route::get('/nodes', NodeController::class)
+                        ->name('billing-bridge.nodes.index');
                 });
         });
     }
