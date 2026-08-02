@@ -6,3 +6,6 @@
 # Those local edits should not travel with the repo.
 plugin.json.bak
 CLAUDE.md
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/
