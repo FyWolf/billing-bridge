@@ -6,6 +6,7 @@ use Hexalabs\BillingBridge\Http\Controllers\EggController;
 use Hexalabs\BillingBridge\Http\Controllers\LifecycleController;
 use Hexalabs\BillingBridge\Http\Controllers\NodeController;
 use Hexalabs\BillingBridge\Http\Controllers\ProvisionController;
+use Hexalabs\BillingBridge\Http\Controllers\SubuserController;
 use Hexalabs\BillingBridge\Http\Controllers\UserController;
 use Illuminate\Foundation\Support\Providers\RouteServiceProvider;
 use Illuminate\Support\Facades\Route;
@@ -40,6 +41,15 @@ class BridgeRoutesProvider extends RouteServiceProvider
                         ->name('billing-bridge.servers.plan');
                     Route::delete('/servers/{server}', [LifecycleController::class, 'destroy'])
                         ->name('billing-bridge.servers.destroy');
+
+                    // Collaborators, owned by the storefront. The panel's own
+                    // add/remove controls are withdrawn for billing-owned
+                    // servers so there is exactly one writer — see
+                    // BillingBridgeProvider::lockManagedSubusers().
+                    Route::post('/servers/{server}/subusers', [SubuserController::class, 'store'])
+                        ->name('billing-bridge.subusers.store');
+                    Route::delete('/servers/{server}/subusers/{user}', [SubuserController::class, 'destroy'])
+                        ->name('billing-bridge.subusers.destroy');
 
                     Route::get('/eggs', EggController::class)
                         ->name('billing-bridge.eggs.index');
