@@ -2,7 +2,7 @@
   "id": "billing-bridge",
   "name": "Billing Bridge",
   "author": "HexaLabs",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Provisioning endpoints for the external HexaLabs billing service. No UI, no dependencies.",
   "category": "plugin",
   "url": "https://github.com/FyWolf/billing-bridge",
