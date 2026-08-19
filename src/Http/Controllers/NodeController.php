@@ -98,24 +98,37 @@ class NodeController extends Controller
     }
 
     /**
-     * Whether the node's daemon answered.
+     * Whether the node's daemon answered, or null if the question could not be put.
      *
      * `Node::statistics()` swallows every transport failure and returns a
-     * zero-filled default, so there is no exception to catch — the only signal
-     * that the call failed is the payload being empty. `memory_total` is the
-     * field the panel itself tests for that (`Node::statistics()`), and a
-     * running machine cannot report zero total memory, so the test is sound
-     * rather than a heuristic. Reproducing a different one here would be a
-     * second implementation of "did the daemon answer".
+     * zero-filled default, so in the normal case there is no exception to catch
+     * — the only signal that the call failed is the payload being empty.
+     * `memory_total` is the field the panel itself tests for that, and a running
+     * machine cannot report zero total memory, so the test is sound rather than
+     * a heuristic. Reproducing a different one here would be a second
+     * implementation of "did the daemon answer".
+     *
+     * The `catch` is not for that. It is for the method not being there, or not
+     * behaving as documented, on a panel build this was never compiled against —
+     * the failure mode the bridge's whole "verify after any panel upgrade" rule
+     * exists for. An exception here would 500 `GET /nodes` and take the entire
+     * mirror stale, folding every location on the status page to Unknown; a null
+     * costs one node's heartbeat and nothing else. Same trade as the budget.
      *
      * The result is cached panel-side for a few seconds, which does not help
      * across a fifteen-minute sync interval — every call from the storefront
      * pays for a real probe. That is the intent: a cached heartbeat is not a
      * heartbeat.
      */
-    private function daemonAnswers(Node $node): bool
+    private function daemonAnswers(Node $node): ?bool
     {
-        return !empty($node->statistics()['memory_total']);
+        try {
+            return !empty($node->statistics()['memory_total']);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return null;
+        }
     }
 
     /**
