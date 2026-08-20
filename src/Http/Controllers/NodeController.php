@@ -7,6 +7,7 @@ use App\Models\Allocation;
 use App\Models\Node;
 use Hexalabs\BillingBridge\Http\Requests\ServerLifecycleRequest;
 use Illuminate\Http\JsonResponse;
+use Throwable;
 
 /**
  * Feeds the billing service's local node cache.
@@ -21,16 +22,21 @@ use Illuminate\Http\JsonResponse;
  *
  * ## This endpoint also feeds the public status page
  *
- * The storefront's `/status` reads only local tables — a synchronous probe of
- * the panel would make a panel outage into a status page that hangs, i.e. the
- * page fails exactly when it is needed. So **every network call the status page
- * depends on happens here**, on the panel's own side of the wire, fifteen
- * minutes before anybody reads the result.
+ * The storefront's `/status` reads local tables and nothing else — a synchronous
+ * probe of the panel would make a panel outage into a status page that hangs,
+ * i.e. the page fails in exactly the circumstance it exists for. So **every
+ * network call the status page depends on happens here**, on the panel's own
+ * side of the wire, fifteen minutes before anybody reads the result.
  *
- * That is why `daemon_reachable` exists. Pelican stores no last-contact
- * timestamp anywhere; `Node::statistics()` asks the daemon live. Without this
- * field a dead machine mirrors identically to a healthy one and the storefront
- * can never say Down without an operator typing an incident by hand.
+ * That is why `daemon_reachable` and `cpu_percent` exist. Pelican stores no
+ * last-contact timestamp and no load history anywhere; `Node::statistics()` asks
+ * the daemon live. Without those two fields a dead machine mirrors identically
+ * to a healthy one, and the storefront can say nothing about how hard a
+ * datacentre is working.
+ *
+ * **Both come out of one call.** `statistics()` returns reachability and load
+ * together, so publishing the load figure costs the panel nothing it was not
+ * already doing for the heartbeat.
  */
 class NodeController extends Controller
 {
@@ -61,44 +67,44 @@ class NodeController extends Controller
 
         $nodes = Node::query()
             ->with(['allocations' => fn ($query) => $query->orderBy('ip')->orderBy('port')])
-            // What the panel has *committed* to servers on this node, which is
-            // the question "is there room here" — not what the machines are
-            // using right now. It is a database aggregate, so it costs no
-            // daemon call and cannot flap.
-            ->withSum('servers', 'memory')
-            ->withSum('servers', 'disk')
-            ->withSum('servers', 'cpu')
             ->orderBy('name')
             ->get()
-            ->map(fn (Node $node) => [
-                'id'               => $node->id,
-                'uuid'             => $node->uuid,
-                'name'             => $node->name,
-                'fqdn'             => $node->fqdn,
-                'public'           => $node->public,
-                'maintenance_mode' => $node->maintenance_mode,
-                'tags'             => $node->tags ?? [],
-                // true = answered, false = did not, null = not checked. All
-                // three are distinct to the storefront and the third is not a
-                // synonym for the second.
-                'daemon_reachable' => microtime(true) < $deadline
-                    ? $this->daemonAnswers($node)
-                    : null,
-                'resources'        => $this->resources($node),
-                'allocations'      => $node->allocations->map(fn (Allocation $allocation) => [
-                    'id'       => $allocation->id,
-                    'ip'       => $allocation->ip,
-                    'ip_alias' => $allocation->ip_alias,
-                    'port'     => $allocation->port,
-                    'assigned' => $allocation->server_id !== null,
-                ])->values(),
-            ]);
+            ->map(function (Node $node) use ($deadline) {
+                $probe = microtime(true) < $deadline ? $this->probe($node) : null;
+
+                return [
+                    'id'               => $node->id,
+                    'uuid'             => $node->uuid,
+                    'name'             => $node->name,
+                    'fqdn'             => $node->fqdn,
+                    'public'           => $node->public,
+                    'maintenance_mode' => $node->maintenance_mode,
+                    'tags'             => $node->tags ?? [],
+                    // true = answered, false = did not, null = not checked. All
+                    // three are distinct to the storefront and the third is not
+                    // a synonym for the second.
+                    'daemon_reachable' => $probe['reachable'] ?? null,
+                    // 0-100 across the whole machine, already normalised — the
+                    // panel's own node chart multiplies this by the thread count
+                    // to get the htop-style per-core sum, so unmultiplied it is
+                    // exactly "how busy is this box". Null whenever there is no
+                    // reading, which is never the same as zero.
+                    'cpu_percent'      => $probe['cpu_percent'] ?? null,
+                    'allocations'      => $node->allocations->map(fn (Allocation $allocation) => [
+                        'id'       => $allocation->id,
+                        'ip'       => $allocation->ip,
+                        'ip_alias' => $allocation->ip_alias,
+                        'port'     => $allocation->port,
+                        'assigned' => $allocation->server_id !== null,
+                    ])->values(),
+                ];
+            });
 
         return response()->json(['data' => $nodes]);
     }
 
     /**
-     * Whether the node's daemon answered, or null if the question could not be put.
+     * Ask one daemon how it is, or null if the question could not be put.
      *
      * `Node::statistics()` swallows every transport failure and returns a
      * zero-filled default, so in the normal case there is no exception to catch
@@ -113,70 +119,35 @@ class NodeController extends Controller
      * the failure mode the bridge's whole "verify after any panel upgrade" rule
      * exists for. An exception here would 500 `GET /nodes` and take the entire
      * mirror stale, folding every location on the status page to Unknown; a null
-     * costs one node's heartbeat and nothing else. Same trade as the budget.
+     * costs one node's reading and nothing else. Same trade as the budget.
      *
      * The result is cached panel-side for a few seconds, which does not help
      * across a fifteen-minute sync interval — every call from the storefront
      * pays for a real probe. That is the intent: a cached heartbeat is not a
      * heartbeat.
+     *
+     * @return array{reachable: bool, cpu_percent: ?float}|null
      */
-    private function daemonAnswers(Node $node): ?bool
+    private function probe(Node $node): ?array
     {
         try {
-            return !empty($node->statistics()['memory_total']);
-        } catch (\Throwable $e) {
+            $statistics = $node->statistics();
+        } catch (Throwable $e) {
             report($e);
 
             return null;
         }
-    }
 
-    /**
-     * Totals and committed sums, for the status page's capacity figure.
-     *
-     * A zero total means *unlimited* in Pelican, not "no capacity" —
-     * `Node::isViable()` skips any dimension whose total is zero. The storefront
-     * has to make the same exception, so the raw zero is passed through rather
-     * than being turned into a null here; one of the two ends has to own that
-     * rule and it is the end that publishes the number.
-     *
-     * The overallocate percentages come too, because "how full is this" and
-     * "can another server still fit" are different questions with different
-     * denominators, and only the storefront knows which one it is answering.
-     *
-     * @return array<string, int>
-     */
-    private function resources(Node $node): array
-    {
+        if (empty($statistics['memory_total'])) {
+            // Reached the code path, got nothing back. Explicitly no load
+            // reading rather than 0.0 — a machine we cannot talk to is not a
+            // machine that is idle, and the storefront averages these.
+            return ['reachable' => false, 'cpu_percent' => null];
+        }
+
         return [
-            'memory'              => (int) $node->memory,
-            'memory_allocated'    => $this->committed($node, 'memory'),
-            'memory_overallocate' => (int) $node->memory_overallocate,
-            'disk'                => (int) $node->disk,
-            'disk_allocated'      => $this->committed($node, 'disk'),
-            'disk_overallocate'   => (int) $node->disk_overallocate,
-            'cpu'                 => (int) $node->cpu,
-            'cpu_allocated'       => $this->committed($node, 'cpu'),
-            'cpu_overallocate'    => (int) $node->cpu_overallocate,
+            'reachable'   => true,
+            'cpu_percent' => round((float) ($statistics['cpu_percent'] ?? 0), 1),
         ];
-    }
-
-    /**
-     * A `withSum` aggregate, read the one way that actually works here.
-     *
-     * `Node` declares `public int $servers_sum_memory = 0` (and the disk and cpu
-     * equivalents) as real typed properties. A declared property is resolved
-     * before `__get()`, so `$node->servers_sum_memory` returns that **zero**
-     * and never reaches the aggregate `withSum` put in the attribute bag.
-     * `getAttribute()` reads the bag directly.
-     *
-     * This is worth the indirection precisely because the wrong version returns
-     * a plausible number: every node would report nothing committed, the status
-     * page would show a fleet at 0% with limitless headroom, and there would be
-     * nothing anywhere to suggest it was untrue.
-     */
-    private function committed(Node $node, string $resource): int
-    {
-        return (int) $node->getAttribute("servers_sum_{$resource}");
     }
 }
