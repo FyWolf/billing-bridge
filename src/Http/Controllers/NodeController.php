@@ -45,6 +45,36 @@ use Throwable;
  * *visitor's* browser for exactly this reason — a server-side number presented
  * under a heading a customer reads as "how far is this from me" would be a
  * systematically flattering claim about somebody else's connection.
+ *
+ * ## `server_ids` exists so a maintenance notice can name one machine
+ *
+ * The storefront has no way to know which of its customers sit on which node.
+ * `orders` records no node — a pack's pinned node list is only the *placement
+ * request*, and `DeploymentPlanner` picks the actual node without reporting
+ * back. So the finest targeting the storefront could manage was a whole
+ * datacentre, which is the wrong granularity for work on one box.
+ *
+ * The alternative was for the storefront to record the chosen node on the order
+ * at provision time. That was rejected: it goes stale the moment an operator
+ * migrates a server between nodes panel-side, and nothing tells the storefront.
+ * A stale node means a maintenance notice reaching the wrong customers, which is
+ * worse than sending none — so the question is answered from live panel state on
+ * every sync, and a migration is reflected within one interval.
+ *
+ * **Bare integers and nothing else.** No names, no owners, no external ids. A
+ * billing-scoped key does see ids of servers it did not create, which is the one
+ * real cost here: the storefront intersects them with the `panel_server_id`
+ * values it already holds, so an id it did not issue tells it nothing it can act
+ * on, and a count of them is something `assigned` already implied.
+ *
+ * **An empty array and an absent key are different facts.** Empty means the node
+ * has no servers; absent means a bridge older than this change, which cannot
+ * answer the question at all. The storefront stores the second as null and
+ * *refuses to send* a node-scoped mailing against it, rather than treating an
+ * unknown as an empty node and quietly mailing nobody. Same tri-state discipline
+ * as `daemon_reachable` above, and for the same reason: the collapsed case fails
+ * silently, in the direction of doing nothing, at the moment somebody needed it
+ * to work.
  */
 class NodeController extends Controller
 {
@@ -74,7 +104,11 @@ class NodeController extends Controller
         $deadline = microtime(true) + self::PROBE_BUDGET_SECONDS;
 
         $nodes = Node::query()
-            ->with(['allocations' => fn ($query) => $query->orderBy('ip')->orderBy('port')])
+            ->with([
+                'allocations' => fn ($query) => $query->orderBy('ip')->orderBy('port'),
+                // Ids and the foreign key, nothing else. See `serverIds()`.
+                'servers' => fn ($query) => $query->select(['id', 'node_id'])->orderBy('id'),
+            ])
             ->orderBy('name')
             ->get()
             ->map(function (Node $node) use ($deadline) {
@@ -109,11 +143,20 @@ class NodeController extends Controller
                     // failure's duration is the timeout, not the node's latency, and
                     // storing it would make a node look slower the more broken it got.
                     'daemon_latency_ms' => $probe['latency_ms'] ?? null,
+                    // Which servers are on this node, right now. Always an array —
+                    // an empty one means "no servers", and the *absence* of this key
+                    // means an older bridge. Those are different facts and the
+                    // storefront must not collapse them; see the method docblock.
+                    'server_ids'       => $node->servers->pluck('id')->map(fn ($id) => (int) $id)->values(),
                     'allocations'      => $node->allocations->map(fn (Allocation $allocation) => [
                         'id'       => $allocation->id,
                         'ip'       => $allocation->ip,
                         'ip_alias' => $allocation->ip_alias,
                         'port'     => $allocation->port,
+                        // Kept alongside `server_ids` rather than replaced by it. A
+                        // storefront older than this change reads only this, and the
+                        // two are answers to different questions anyway: how many
+                        // ports are free, versus who is on the box.
                         'assigned' => $allocation->server_id !== null,
                     ])->values(),
                 ];
