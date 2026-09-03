@@ -34,9 +34,17 @@ use Throwable;
  * to a healthy one, and the storefront can say nothing about how hard a
  * datacentre is working.
  *
- * **Both come out of one call.** `statistics()` returns reachability and load
- * together, so publishing the load figure costs the panel nothing it was not
- * already doing for the heartbeat.
+ * **All three come out of one call.** `statistics()` returns reachability and
+ * load together and the clock around it costs nothing, so publishing the load
+ * figure and the probe latency costs the panel nothing it was not already doing
+ * for the heartbeat.
+ *
+ * `daemon_latency_ms` is the newest of the three and the narrowest: it is
+ * admin-only on the storefront, because it measures the panel's own network to
+ * its own daemon. The storefront's public latency figure is measured in the
+ * *visitor's* browser for exactly this reason — a server-side number presented
+ * under a heading a customer reads as "how far is this from me" would be a
+ * systematically flattering claim about somebody else's connection.
  */
 class NodeController extends Controller
 {
@@ -90,6 +98,17 @@ class NodeController extends Controller
                     // exactly "how busy is this box". Null whenever there is no
                     // reading, which is never the same as zero.
                     'cpu_percent'      => $probe['cpu_percent'] ?? null,
+                    // How long this probe took, in whole milliseconds. Admin-only
+                    // debug detail on the storefront: it is the panel talking to its
+                    // own daemon, which answers "is that machine slow to answer us"
+                    // and nothing about any customer's ping — the storefront's public
+                    // latency is measured in the visitor's own browser, deliberately,
+                    // and these two must never be shown as the same number.
+                    //
+                    // Null on a probe that failed as well as on one that never ran. A
+                    // failure's duration is the timeout, not the node's latency, and
+                    // storing it would make a node look slower the more broken it got.
+                    'daemon_latency_ms' => $probe['latency_ms'] ?? null,
                     'allocations'      => $node->allocations->map(fn (Allocation $allocation) => [
                         'id'       => $allocation->id,
                         'ip'       => $allocation->ip,
@@ -126,10 +145,18 @@ class NodeController extends Controller
      * pays for a real probe. That is the intent: a cached heartbeat is not a
      * heartbeat.
      *
-     * @return array{reachable: bool, cpu_percent: ?float}|null
+     * The elapsed time is taken around `statistics()` alone, so it is the round
+     * trip to the daemon and not this endpoint's own bookkeeping. It is only
+     * reported for a call that answered: the duration of a *failed* probe is the
+     * timeout above, which is a constant, and publishing it as latency would make
+     * a node appear to slow down in exact proportion to how broken it is.
+     *
+     * @return array{reachable: bool, cpu_percent: ?float, latency_ms: ?int}|null
      */
     private function probe(Node $node): ?array
     {
+        $started = microtime(true);
+
         try {
             $statistics = $node->statistics();
         } catch (Throwable $e) {
@@ -138,16 +165,19 @@ class NodeController extends Controller
             return null;
         }
 
+        $elapsedMs = (int) round((microtime(true) - $started) * 1000);
+
         if (empty($statistics['memory_total'])) {
             // Reached the code path, got nothing back. Explicitly no load
             // reading rather than 0.0 — a machine we cannot talk to is not a
             // machine that is idle, and the storefront averages these.
-            return ['reachable' => false, 'cpu_percent' => null];
+            return ['reachable' => false, 'cpu_percent' => null, 'latency_ms' => null];
         }
 
         return [
             'reachable'   => true,
             'cpu_percent' => round((float) ($statistics['cpu_percent'] ?? 0), 1),
+            'latency_ms'  => $elapsedMs,
         ];
     }
 }
