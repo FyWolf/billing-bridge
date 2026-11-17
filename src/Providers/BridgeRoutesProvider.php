@@ -18,7 +18,12 @@ class BridgeRoutesProvider extends RouteServiceProvider
         $this->routes(function () {
             Route::prefix('api/application/billing')
                 ->middleware(['auth:sanctum', 'throttle:120,1'])
-                ->withoutMiddleware(['web', 'auth', 'verify-csrf-token', 'App\Http\Middleware\VerifyCsrfToken'])
+                // Never list 'auth' here. Since Laravel 13.42 (Panel 1.0.0-rc.3) an
+                // exclusion is matched on the class with its `:parameters` stripped, so
+                // 'auth' also removes the 'auth:sanctum' above. No authentication runs,
+                // `$request->user()` is null, and every endpoint 500s in
+                // ApplicationApiRequest::authorize() on `currentAccessToken() on null`.
+                ->withoutMiddleware(['web', 'verify-csrf-token', 'App\Http\Middleware\VerifyCsrfToken'])
                 ->group(function () {
                     Route::post('/users', [UserController::class, 'store'])
                         ->name('billing-bridge.users.store');
